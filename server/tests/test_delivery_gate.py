@@ -228,8 +228,13 @@ def test_gongwen_render_route_blocks_p0(client: TestClient) -> None:
 
 
 def test_main_app_mounts_gongwen_and_proofread() -> None:
-    """装配检查：两道闸门的路由确实挂在主应用上（task 5.1）。"""
-    paths = {route.path for route in main.app.routes if hasattr(route, "methods")}
+    """装配检查：两道闸门的路由确实挂在主应用上（task 5.1）。
+
+    断言 openapi() 的路径表而不是 app.routes 的内部结构：Starlette 1.9 起
+    include_router 不再把子路由摊平进 app.routes（改挂 _IncludedRouter 条目，
+    没有 .path），按内部结构断言会在新版本上假红；openapi 才是对外契约面。
+    """
+    paths = set(main.app.openapi()["paths"])
     assert "/api/v1/gongwen/render" in paths
     assert "/api/v1/proofread" in paths
     assert "/api/v1/proofread/rules" in paths
