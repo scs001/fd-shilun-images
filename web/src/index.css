@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+/* 实论 Shilun — 纸的世界。
+   白纸黑字：hero 不上色，由巨大的宋体墨字承担全部重量；
+   学者青只给引用标记与链接。引用条目逐行显影是页面唯一的动效时刻。 */
+@theme {
+  --font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", Georgia, serif;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  --color-paper: #fafaf8;
+  --color-mist: #f0f0ec;
+  --color-ink: #1c1c1e;
+  --color-ink-soft: #56565c;
+  --color-line: #e2e2dd;
+  --color-line-strong: #c9c9c2;
+  --color-scholar: #1f5f5b;
+  --color-scholar-soft: #e2efee;
+  --color-night-band: #14202e;
+  --color-moon: #e8edf2;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background: var(--color-scholar-soft);
+  color: var(--color-scholar);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-scholar);
+  outline-offset: 2px;
+}
+
+/* 引用条目显影——页面唯一的动效时刻。 */
+@keyframes cite-develop {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.cite-line {
+  animation: cite-develop 0.8s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.cite-line-1 { animation-delay: 0.15s; }
+.cite-line-2 { animation-delay: 0.4s; }
+.cite-line-3 { animation-delay: 0.65s; }
+
+@keyframes hero-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.hero-rise { animation: hero-rise 0.9s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.hero-rise-1 { animation-delay: 0.05s; }
+.hero-rise-2 { animation-delay: 0.18s; }
+.hero-rise-3 { animation-delay: 0.32s; }
