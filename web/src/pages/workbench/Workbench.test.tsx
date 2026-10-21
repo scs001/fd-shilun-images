@@ -15,6 +15,15 @@ import { WritingView } from "./WritingPanel";
 
 const noop = () => {};
 
+// 核验报告用固定文稿：locator 的字符区间必须真的索引到这段文本，
+// 否则「按 locator 高亮」只是个装饰。
+const VERIFY_TEXT = "第一段：结论与依据一一对应。\n第二段：这里有 [[cite:c1]]、[[cite:c2]] 与 [[cite:c3]] 三处引用。";
+const span = (marker: string) => {
+  const start = VERIFY_TEXT.indexOf(marker);
+  if (start < 0) throw new Error(`测试文稿里没有 ${marker}`);
+  return { char_start: start, char_end: start + marker.length };
+};
+
 describe("API 全挂时的降级态", () => {
   it("mock fetch reject：面板实际调用的加载路径映射为 unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("fetch failed"))));
@@ -84,13 +93,27 @@ describe("API 全挂时的降级态", () => {
           status: "ready",
           data: {
             results: [
-              { id: "w1", title: "价值对齐综述", year: 2024, venue: "Nature", cited_by: 42, provenance: "openalex" },
-              { id: "w2", title: "对齐评估方法", year: 2023, venue: "Science", cited_by: 7, provenance: "crossref" },
+              {
+                work_id: "W1",
+                title: "价值对齐综述",
+                year: 2024,
+                venue: "Nature",
+                cited_by_count: 42,
+                provenance: { source: "openalex", stable_id: "W1", license: "CC0" },
+              },
+              {
+                work_id: "10.1/w2",
+                title: "对齐评估方法",
+                year: 2023,
+                venue: "Science",
+                cited_by_count: 7,
+                provenance: { source: "crossref", stable_id: "10.1/w2", license: "metadata-only" },
+              },
             ],
           },
         }}
         currentProjectLabel="论文一"
-        favoritedIds={["w1"]}
+        favoritedIds={["W1"]}
         favoriteBusyId={null}
         favoriteNote={null}
         onFavorite={noop}
@@ -101,6 +124,116 @@ describe("API 全挂时的降级态", () => {
     expect(ready).toContain("openalex");
     expect(ready).toContain("已收藏"); // 已收藏过的按钮态
     expect(ready).toContain("收藏到当前项目"); // 未收藏的入口仍在（其它结果）
+  });
+
+  it("检索：中文开放元数据兜底（coverage=partial）渲染覆盖不完整提示", () => {
+    const note =
+      "中文文献经开放元数据（Crossref/OpenAlex）检索，覆盖不完整：仅含已注册 DOI 或已被收录的条目。";
+    const html = renderToString(
+      <SearchView
+        mode="query"
+        onMode={noop}
+        text="乡村振兴"
+        onText={noop}
+        onSubmit={noop}
+        busy={false}
+        result={{
+          status: "ready",
+          data: {
+            coverage_note: note,
+            results: [
+              {
+                work_id: "10.1234/cn.2023.001",
+                title: "乡村振兴战略下的县域治理",
+                year: 2023,
+                venue: "中国行政管理",
+                provenance: {
+                  source: "crossref",
+                  stable_id: "10.1234/cn.2023.001",
+                  license: "metadata-only",
+                  coverage: "partial",
+                  metadata_only: true,
+                  matched_terms: ["乡村", "振兴", "村振"],
+                  coverage_ratio: 0.6,
+                },
+              },
+            ],
+          },
+        }}
+        currentProjectLabel="论文一"
+        favoritedIds={[]}
+        favoriteBusyId={null}
+        favoriteNote={null}
+        onFavorite={noop}
+      />,
+    );
+    expect(html).toContain("覆盖不完整");
+    expect(html).toContain("乡村振兴战略下的县域治理");
+    expect(html).toContain("crossref");
+    // 部分覆盖摊开：逐条显示本条覆盖了查询的哪些词
+    expect(html).toContain("本条覆盖查询词");
+    expect(html).toContain("乡村、振兴、村振");
+  });
+
+  it("检索：授权通道命中不渲染覆盖提示", () => {
+    const html = renderToString(
+      <SearchView
+        mode="query"
+        onMode={noop}
+        text="乡村振兴"
+        onText={noop}
+        onSubmit={noop}
+        busy={false}
+        result={{
+          status: "ready",
+          data: {
+            results: [
+              {
+                work_id: "CN-001",
+                title: "乡村振兴战略下的县域治理",
+                year: 2023,
+                provenance: {
+                  source: "wanfang",
+                  stable_id: "CN-001",
+                  license: "万方合同 W-2026-001",
+                  authorization: { channel: "wanfang", basis: "万方合同 W-2026-001" },
+                },
+              },
+            ],
+          },
+        }}
+        currentProjectLabel={null}
+        favoritedIds={[]}
+        favoriteBusyId={null}
+        favoriteNote={null}
+        onFavorite={noop}
+      />,
+    );
+    expect(html).not.toContain("覆盖不完整");
+    expect(html).toContain("wanfang");
+  });
+
+  it("检索：精排开关可选出场——传 onRefine 才渲染勾选框", () => {
+    const base = {
+      mode: "query" as const,
+      onMode: noop,
+      text: "乡村振兴",
+      onText: noop,
+      onSubmit: noop,
+      busy: false,
+      result: { status: "idle" as const },
+      currentProjectLabel: null,
+      favoritedIds: [],
+      favoriteBusyId: null,
+      favoriteNote: null,
+      onFavorite: noop,
+    };
+    const withSwitch = renderToString(<SearchView {...base} refine={false} onRefine={noop} />);
+    expect(withSwitch).toContain("精排");
+    expect(withSwitch).toContain("用模型复核相关性");
+    // 只读渲染（不传 onRefine）保持原样：不出开关，也不能被误当成已开通能力
+    const withoutSwitch = renderToString(<SearchView {...base} />);
+    expect(withoutSwitch).not.toContain("精排");
   });
 
   it("公文：doctypes unavailable → 渲染「接线中」", () => {
@@ -235,7 +368,51 @@ describe("API 全挂时的降级态", () => {
         validating={false}
         validateResult={{
           status: "ready",
-          data: { valid: false, stripped: ["套话一句", "空话一句"], cleaned_text: "清洗后的文稿" },
+          data: {
+            text: VERIFY_TEXT,
+            valid: ["c1"],
+            stripped: ["套话一句", "空话一句"],
+            cleaned_text: "清洗后的文稿",
+            verification_mode: "shadow",
+            verification: {
+              report_version: "cite-verify-v1",
+              mode: "shadow",
+              generated_at: "2026-10-21T12:00:00Z",
+              citation_count: 3,
+              counts: { total: 3, passed: 1, blocked: 1, pending: 1 },
+              items: [
+                {
+                  rule_id: "cite.resolvable",
+                  level: "resolvable",
+                  status: "pass",
+                  locator: { kind: "citation", citation_id: "c1", ...span("[[cite:c1]]") },
+                  evidence: [{ source: "collection", detail: "在收藏清单中" }],
+                  reason: "引用可解",
+                },
+                {
+                  rule_id: "cite.metadata",
+                  level: "authentic",
+                  status: "block",
+                  locator: { kind: "citation", citation_id: "c2", ...span("[[cite:c2]]") },
+                  evidence: [{ source: "crossref", detail: "年份不一致" }],
+                  reason: "元数据不符",
+                },
+                {
+                  rule_id: "cite.fulltext_missing",
+                  level: "support",
+                  status: "pending_review",
+                  locator: { kind: "citation", citation_id: "c3", ...span("[[cite:c3]]") },
+                  evidence: [],
+                  reason: "无全文可核",
+                },
+              ],
+              blocked_citation_ids: ["c2"],
+              pending_citation_ids: ["c3"],
+            },
+            annotations: [
+              { citation_id: "c3", reason: "无全文可核", rule_ids: ["cite.fulltext_missing"], levels: ["support"] },
+            ],
+          },
         }}
       />,
     );
@@ -249,5 +426,16 @@ describe("API 全挂时的降级态", () => {
     expect(html).toContain("未通过");
     expect(html).toContain("套话一句");
     expect(html).toContain("清洗后的文稿");
+    // 核验报告（task 1.6）：三态汇总 + 逐条定位 + 原文高亮锚点
+    expect(html).toContain("通过 1");
+    expect(html).toContain("拦截 1");
+    expect(html).toContain("待核 1");
+    expect(html).toContain("cite.metadata"); // rule_id
+    expect(html).toContain("元数据不符");
+    expect(html).toContain("Shadow 模式"); // 当前生效模式
+    expect(html).toContain("cite-verify-v1"); // 报告版本，可机读契约
+    // locator 落到原文段落：段锚点 + 拦截/待核两态高亮
+    expect(html).toContain('id="verify-para-1"');
+    expect(html).toContain("<mark");
   });
 });

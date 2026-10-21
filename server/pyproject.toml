@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2",
     "pyjwt[crypto]>=2.8",
     "uvicorn",
+    "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]
@@ -23,5 +24,15 @@ dev = ["pytest", "httpx"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+# 显式列包（setuptools 自动发现会把 data/ 误判为顶层包，见 commit 08378c7）。
+# 新增子包必须在此登记，否则镜像里 pip install . 装不上。
 [tool.setuptools]
-packages = ["fd_shilun_api"]
+packages = [
+    "fd_shilun_api",
+    "fd_shilun_api.verify",
+    "fd_shilun_api.gongwen",
+    "fd_shilun_api.proofread",
+]
+
+[tool.setuptools.package-data]
+"fd_shilun_api.proofread" = ["*.json"]

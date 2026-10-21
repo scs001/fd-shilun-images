@@ -54,27 +54,32 @@ describe("URL 拼装与 token 头", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe(`${API_BASE}/api/writing/projects/p1/citations?format=apa`);
+    expect(url).toBe(`${API_BASE}/api/v1/writing/projects/p1/citations?format=apa`);
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer ui-tok");
     expect(init.method).toBe("GET");
     expect(init.body).toBeUndefined();
   });
 
-  it("POST 带 JSON body 与 Content-Type（/api/search/works 关键词与 DOI 双模式）", async () => {
+  it("POST 带 JSON body 与 Content-Type（/api/v1/search/works 关键词与 DOI 双模式）", async () => {
     const fetchMock = vi.fn(async () => okJson({ results: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
     await api.searchWorks({ query: "对齐 综述" });
     await api.searchWorks({ doi: "10.1000/xyz123" });
+    await api.searchWorks({ query: "乡村振兴", rerank: true });
 
     const [u1, i1] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(u1).toBe(`${API_BASE}/api/search/works`);
+    expect(u1).toBe(`${API_BASE}/api/v1/search/works`);
     expect(i1.method).toBe("POST");
     expect(new Headers(i1.headers).get("content-type")).toBe("application/json");
     expect(JSON.parse(String(i1.body))).toEqual({ query: "对齐 综述" });
 
     const [, i2] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
     expect(JSON.parse(String(i2.body))).toEqual({ doi: "10.1000/xyz123" });
+
+    // 精排是显式开关：勾了才带 rerank，默认请求体不变
+    const [, i3] = fetchMock.mock.calls[2] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(i3.body))).toEqual({ query: "乡村振兴", rerank: true });
   });
 
   it("路径参数走 encodeURIComponent；gov/template 的 doctype 走 query", async () => {
@@ -85,9 +90,9 @@ describe("URL 拼装与 token 头", () => {
     await api.govTemplate("通知");
 
     const [u1] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(u1).toBe(`${API_BASE}/api/writing/projects/proj%20id%2F1/validate`);
+    expect(u1).toBe(`${API_BASE}/api/v1/writing/projects/proj%20id%2F1/validate`);
     const [u2] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
-    expect(u2).toBe(`${API_BASE}/api/gov/template?doctype=${encodeURIComponent("通知")}`);
+    expect(u2).toBe(`${API_BASE}/api/v1/gov/template?doctype=${encodeURIComponent("通知")}`);
   });
 
   it("未设 token 时不发 Authorization 头", async () => {

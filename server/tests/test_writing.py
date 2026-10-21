@@ -23,6 +23,9 @@ class _AuthHolder:
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("FD_SHILUN_DB", str(tmp_path / "writing.db"))
+    # 三级核验默认走 shadow（只出报告），这里强制离线，避免单测访问元数据上游。
+    monkeypatch.setenv("FD_SHILUN_VERIFY_OFFLINE", "1")
+    monkeypatch.delenv("FD_SHILUN_CITE_VERIFY_MODE", raising=False)
     monkeypatch.delenv("FD_SHILUN_LLM_API_KEY", raising=False)
     holder = _AuthHolder()
     app = FastAPI()

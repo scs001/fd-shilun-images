@@ -80,3 +80,18 @@ export function WarnBadge() {
     </span>
   );
 }
+
+/** 核验状态徽标（pass / block / pending_review）。 */
+export function VerifyStatusBadge({ status }: { status: "pass" | "block" | "pending_review" }) {
+  const { t } = useTranslation();
+  const styles: Record<string, string> = {
+    pass: "border-green-300 bg-green-50 text-green-800",
+    block: "border-red-300 bg-red-50 text-red-800",
+    pending_review: "border-amber-300 bg-amber-50 text-amber-800",
+  };
+  return (
+    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${styles[status] ?? "border-neutral-300"}`}>
+      {t(`workbench.writing.verify.status.${status}`)}
+    </span>
+  );
+}

@@ -33,6 +33,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .llm import LLMError, chat, is_configured
+from .verify.authentic import HttpMetadataResolver, MetadataResolver
+from .verify.resolvable import CITE_MARKER_RE
+from .verify.service import verification_mode, verify_text
 
 # --------------------------------------------------------------------------
 # 存储（自包含，参考 fd-zhesi personal.py 的连接模式）
@@ -572,7 +575,9 @@ def _llm_enhance(
 # 引用可解校验（核心不变量）
 # --------------------------------------------------------------------------
 
-CITE_MARKER_RE = re.compile(r"\[\[cite:([^\[\]]*?)\]\]")
+# 元数据解析器在模块级可替换：测试注入确定性替身，生产走公开元数据通道。
+# 单通道失败只会让该引用标待核，不影响校验主流程，更不会把「查不到」当「假」。
+metadata_resolver: MetadataResolver = HttpMetadataResolver()
 
 
 def _snapshot_text(snapshot: Any) -> str | None:
@@ -830,10 +835,16 @@ def generate_outline(
 def validate_project(
     project_id: str, body: ValidateIn | None = None, user_id: str = Depends(require_user)
 ) -> dict:
-    """校验稿件文本中的 [[cite:<id>]]：逐个对照 citations 表，解不出的剥除。"""
+    """三级核验稿件引用：可解 → 真实 → 支持，并按模式处置文本。
+
+    off/shadow 的 cleaned_text 与历史行为逐字节一致（只剥不可解标记）；
+    enforce 额外剥除被 block 的引用；pending_review 永不改文本，只在
+    annotations 中列出待核原因。
+    """
     with closing(connect()) as conn:
         _project_or_404(conn, project_id, user_id)
-        valid_ids = {r["id"] for r in _list_citations(conn, project_id)}
+        citations = _list_citations(conn, project_id)
+    valid_ids = {c["id"] for c in citations}
 
     source, version_id, text = "body", None, (body.text if body else None)
     if text is None or not text.strip():
@@ -851,10 +862,22 @@ def validate_project(
         raise HTTPException(400, "无可校验文本：请传 text 或先保存含 text 的版本快照")
 
     out = resolve_citations(text, valid_ids)
+    mode = verification_mode()
+    outcome = verify_text(text, citations, mode=mode, resolver=metadata_resolver)
     return {
         "project_id": project_id,
         "source": source,
         "version_id": version_id,
         "citation_ids_in_collection": sorted(valid_ids),
         **out,
+        # 回显被核验的原文：报告里的 locator 字符区间索引的就是这篇文本，
+        # 前端据此高亮。enforce 下 cleaned_text 已删标记，与 locator 不再同构。
+        "text": text,
+        # 文本处置以三级核验结果为准：off/shadow 与上面的 legacy 输出相同，
+        # enforce 才会多剥 block 标记。
+        "cleaned_text": outcome.cleaned_text,
+        "verification": outcome.report.model_dump(mode="json"),
+        "verification_mode": mode,
+        "annotations": [a.model_dump(mode="json") for a in outcome.annotations],
     }
+

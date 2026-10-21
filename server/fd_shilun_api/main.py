@@ -9,7 +9,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
+from .gongwen.api import router as gongwen_router
 from .gov import router as gov_router
+from .proofread.api import router as proofread_router
 from .search import router as search_router
 from .writing import router as writing_router
 
@@ -25,6 +27,8 @@ app.add_middleware(
 app.include_router(search_router)
 app.include_router(gov_router)
 app.include_router(writing_router)
+app.include_router(gongwen_router)
+app.include_router(proofread_router)
 
 
 @app.get("/healthz")

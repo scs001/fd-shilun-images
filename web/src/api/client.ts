@@ -122,19 +122,43 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 
 // ---- 契约类型（对接 ../server 契约；接线期防御式可选字段） ----
 
-/** 检索结果（POST /api/search/works）。 */
+/** 检索结果出处（服务端 Provenance）。 */
+export interface WorkProvenance {
+  source: string;
+  stable_id: string;
+  license: string;
+  /** 仅授权通道结果填充：来源通道与授权依据。 */
+  authorization?: { channel: string; basis: string } | null;
+  /** partial=已知覆盖不完整（中文开放元数据兜底）；主路径不写该字段。 */
+  coverage?: "partial" | null;
+  /** 只有元数据、没有原文。 */
+  metadata_only?: boolean | null;
+  /** 本条命中查询里的哪些词（部分覆盖的透明度）。 */
+  matched_terms?: string[] | null;
+  /** 这些词占查询词项的比例。 */
+  coverage_ratio?: number | null;
+}
+
+/** 检索结果（POST /api/v1/search/works）。 */
 export interface WorkResult {
-  id: string;
-  title: string;
+  work_id: string;
+  doi?: string | null;
+  title?: string | null;
   year?: number | null;
   venue?: string | null;
-  cited_by?: number | null;
-  provenance?: string | null;
+  cited_by_count?: number | null;
+  provenance?: WorkProvenance | null;
 }
 
 export interface SearchResponse {
   results: WorkResult[];
+  total?: number | null;
+  page?: number;
+  per_page?: number;
   reason?: string | null;
+  detail?: string | null;
+  /** 覆盖度整句提示：中文文献经开放元数据检索时出现。 */
+  coverage_note?: string | null;
 }
 
 /** 文种（GET /api/gov/doctypes）。 */
@@ -181,11 +205,75 @@ export interface OutlineResponse {
   engine?: string;
 }
 
-/** 校验（POST /api/writing/projects/{id}/validate）。stripped 形状未定（数组/计数），防御式渲染。 */
+/** 校验（POST /api/writing/projects/{id}/validate）。 */
 export interface ValidateResponse {
-  valid: boolean;
+  project_id?: string;
+  source?: string;
+  version_id?: string | null;
+  marker_count?: number;
+  /** 服务端历史字段：有效引用的 id 列表（防御式规整，兼容计数/布尔旧形态）。 */
+  valid?: unknown;
   stripped?: unknown;
+  /** locator 索引的原文——高亮必须落在这份文本上。 */
+  text?: string;
   cleaned_text?: string;
+  verification?: VerificationReport;
+  verification_mode?: VerificationMode;
+  /** 待核标注：保留在稿中，附无法核验的原因。 */
+  annotations?: VerificationAnnotation[];
+}
+
+export type VerifyStatus = "pass" | "block" | "pending_review";
+export type VerifyLevel = "resolvable" | "authentic" | "support";
+export type VerificationMode = "off" | "shadow" | "enforce";
+
+/** 定位契约（与 server 的 locator.py 同形）：字符区间可高亮，字段锚点用于公文要素。 */
+export interface VerificationLocator {
+  kind: "citation" | "paragraph" | "char_range" | "document" | "field";
+  citation_id?: string | null;
+  paragraph_index?: number | null;
+  char_start?: number | null;
+  char_end?: number | null;
+  marker?: string | null;
+  field?: string | null;
+}
+
+/** 单条判定依据。 */
+export interface VerificationEvidence {
+  source: string;
+  detail?: string;
+  fields?: Record<string, unknown>;
+  url?: string | null;
+}
+
+/** 一条核验结果（一条引用 × 一级判定）。 */
+export interface VerificationItem {
+  rule_id: string;
+  level: VerifyLevel;
+  status: VerifyStatus;
+  locator: VerificationLocator;
+  evidence: VerificationEvidence[];
+  reason: string;
+}
+
+/** 核验报告（随 validate 响应产出，可机读）。 */
+export interface VerificationReport {
+  report_version: string;
+  mode: "shadow" | "enforce";
+  generated_at: string;
+  citation_count: number;
+  counts: { total: number; passed: number; blocked: number; pending: number };
+  items: VerificationItem[];
+  blocked_citation_ids: string[];
+  pending_citation_ids: string[];
+}
+
+/** 待核标注。 */
+export interface VerificationAnnotation {
+  citation_id: string;
+  reason: string;
+  rule_ids: string[];
+  levels: string[];
 }
 
 // ---- 防御式规整 ----
@@ -261,42 +349,52 @@ export function textList(v: unknown): string[] {
 
 export const api = {
   // 检索
-  searchWorks: (b: { query?: string; doi?: string }) =>
-    request<SearchResponse>("/api/search/works", { method: "POST", body: b, wired: true }),
+  searchWorks: (b: { query?: string; doi?: string; rerank?: boolean }) =>
+    request<SearchResponse>("/api/v1/search/works", { method: "POST", body: b, wired: true }),
 
   // 公文
-  listDoctypes: () => request<DoctypeInfo[]>("/api/gov/doctypes", { wired: true }),
+  listDoctypes: () => request<DoctypeInfo[]>("/api/v1/gov/doctypes", { wired: true }),
   govTemplate: (doctype: string) =>
-    request<GovTemplate>("/api/gov/template", { query: { doctype }, wired: true }),
+    request<GovTemplate>("/api/v1/gov/template", { query: { doctype }, wired: true }),
   govDraft: (b: { doctype: string; subject: string; key_points: string[] }) =>
-    request<GovDraftResponse>("/api/gov/draft", { method: "POST", body: b, wired: true }),
+    request<GovDraftResponse>("/api/v1/gov/draft", { method: "POST", body: b, wired: true }),
 
   // 写作
   createProject: (title: string) =>
-    request<Project>("/api/writing/projects", { method: "POST", body: { title }, wired: true }),
-  listProjects: () => request<unknown>("/api/writing/projects", { wired: true }),
-  addCitation: (
-    projectId: string,
-    work: { work_id: string; title?: string | null; year?: number | null; venue?: string | null; provenance?: string | null },
-  ) =>
-    request<unknown>(`/api/writing/projects/${encodeURIComponent(projectId)}/citations`, {
+    request<Project>("/api/v1/writing/projects", { method: "POST", body: { title }, wired: true }),
+  listProjects: () => request<unknown>("/api/v1/writing/projects", { wired: true }),
+  // 服务端契约是 CitationIn{kind, ref_id, meta}；这里把检索结果映射成该形状。
+  addCitation: (projectId: string, work: WorkResult) =>
+    request<unknown>(`/api/v1/writing/projects/${encodeURIComponent(projectId)}/citations`, {
       method: "POST",
-      body: work,
+      body: {
+        kind: "openalex",
+        ref_id: work.doi || work.work_id,
+        meta: {
+          title: work.title ?? null,
+          year: work.year ?? null,
+          venue: work.venue ?? null,
+          source: work.provenance?.source ?? null,
+          stable_id: work.provenance?.stable_id ?? work.work_id,
+          coverage: work.provenance?.coverage ?? null,
+          metadata_only: work.provenance?.metadata_only ?? null,
+        },
+      },
       wired: true,
     }),
   listCitations: (projectId: string, format: CitationFormat) =>
-    request<unknown>(`/api/writing/projects/${encodeURIComponent(projectId)}/citations`, {
+    request<unknown>(`/api/v1/writing/projects/${encodeURIComponent(projectId)}/citations`, {
       query: { format },
       wired: true,
     }),
   outline: (projectId: string) =>
-    request<OutlineResponse>(`/api/writing/projects/${encodeURIComponent(projectId)}/outline`, {
+    request<OutlineResponse>(`/api/v1/writing/projects/${encodeURIComponent(projectId)}/outline`, {
       method: "POST",
       body: {},
       wired: true,
     }),
   validate: (projectId: string, text: string) =>
-    request<ValidateResponse>(`/api/writing/projects/${encodeURIComponent(projectId)}/validate`, {
+    request<ValidateResponse>(`/api/v1/writing/projects/${encodeURIComponent(projectId)}/validate`, {
       method: "POST",
       body: { text },
       wired: true,

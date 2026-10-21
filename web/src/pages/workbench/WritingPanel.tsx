@@ -1,5 +1,6 @@
 /** 写作 · 引证成稿：项目选择/新建 → 引用清单（GB/T 7714|APA 切换复制）→ 提纲（依据徽标/需补证黄标）→ 文稿校验。 */
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   api,
@@ -10,6 +11,8 @@ import {
   type OutlineResponse,
   type Project,
   type ValidateResponse,
+  type VerificationItem,
+  type VerifyStatus,
 } from "../../api/client";
 import { Loadable, mapApiError } from "../../api/state";
 import {
@@ -20,6 +23,7 @@ import {
   Loading,
   Note,
   SectionTitle,
+  VerifyStatusBadge,
   WarnBadge,
 } from "../../components/ui";
 
@@ -310,16 +314,18 @@ function OutlineView({ data }: { data: OutlineResponse }) {
 function ValidateResultView({ data, onCopy }: { data: ValidateResponse; onCopy: (text: string, index: number) => void }) {
   const { t } = useTranslation();
   const strippedList = strippedItems(data.stripped);
+  const report = data.verification;
+  // 有报告就以三态口径展示（pending 不算通过）；旧服务端无报告时退回二态徽标
+  const allPassed = report ? report.counts.blocked === 0 && report.counts.pending === 0 : Boolean(data.valid);
   return (
     <div className="mt-3 space-y-3">
       <span
         className={`inline-block rounded-full border px-3 py-0.5 text-sm ${
-          data.valid ? "border-green-300 bg-green-50 text-green-800" : "border-red-300 bg-red-50 text-red-800"
+          allPassed ? "border-green-300 bg-green-50 text-green-800" : "border-red-300 bg-red-50 text-red-800"
         }`}
       >
-        {data.valid ? t("workbench.writing.valid") : t("workbench.writing.invalid")}
+        {allPassed ? t("workbench.writing.valid") : t("workbench.writing.invalid")}
       </span>
-
       {typeof data.stripped === "number" ? (
         <p className="text-sm text-neutral-500">{t("workbench.writing.strippedCount", { count: data.stripped })}</p>
       ) : strippedList.length ? (
@@ -332,6 +338,8 @@ function ValidateResultView({ data, onCopy }: { data: ValidateResponse; onCopy: 
           </ul>
         </div>
       ) : null}
+
+      {report ? <VerifyReportView data={data} /> : null}
 
       {data.cleaned_text ? (
         <div>
@@ -360,6 +368,199 @@ function strippedItems(stripped: unknown): string[] {
   if (typeof stripped === "number") return [String(stripped)];
   if (typeof stripped === "string" && stripped) return [stripped];
   return [];
+}
+
+// ---- 引用核验报告（task 1.6）：汇总 + 逐条定位 + 原文高亮跳转 ----
+
+/** 高亮区间：只标「要人动手」的两态；pass 留在清单里，不刷屏。 */
+interface Mark {
+  start: number;
+  end: number;
+  status: VerifyStatus;
+}
+
+/** 报告条目 → 区间。同一引用可能同时缺上游与缺全文，区间会重叠，先归并。 */
+function collectMarks(items: VerificationItem[]): Mark[] {
+  const raw: Mark[] = [];
+  for (const item of items) {
+    const { char_start: s, char_end: e } = item.locator;
+    if (item.status === "pass" || s == null || e == null || e <= s) continue;
+    raw.push({ start: s, end: e, status: item.status });
+  }
+  raw.sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: Mark[] = [];
+  for (const m of raw) {
+    const last = merged[merged.length - 1];
+    if (last && m.start <= last.end) {
+      last.end = Math.max(last.end, m.end);
+      // 拦截优先于待核：一处重叠时按更严的处置着色
+      if (m.status === "block") last.status = "block";
+    } else {
+      merged.push({ ...m });
+    }
+  }
+  return merged;
+}
+
+/** 按换行切段并保留原文偏移，供「跳转到对应段落」用。 */
+function splitParagraphs(text: string): { start: number; end: number; text: string }[] {
+  const out: { start: number; end: number; text: string }[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\n") {
+      out.push({ start, end: i, text: text.slice(start, i) });
+      start = i + 1;
+    }
+  }
+  out.push({ start, end: text.length, text: text.slice(start) });
+  return out;
+}
+
+const MARK_CLASS: Record<string, string> = {
+  block: "bg-red-100 text-red-900 underline decoration-red-400 decoration-2",
+  pending_review: "bg-amber-100 text-amber-900 underline decoration-amber-400 decoration-2",
+};
+
+/** 一段原文 + 落在该段内的标记区间。 */
+function Paragraph({
+  index,
+  text,
+  start,
+  marks,
+}: {
+  index: number;
+  text: string;
+  start: number;
+  marks: Mark[];
+}) {
+  const inner: ReactNode[] = [];
+  let cursor = 0;
+  for (const m of marks) {
+    const from = Math.max(m.start - start, 0);
+    const to = Math.min(m.end - start, text.length);
+    if (to <= cursor || from >= text.length) continue;
+    if (from > cursor) inner.push(<span key={`t${cursor}`}>{text.slice(cursor, from)}</span>);
+    inner.push(
+      <mark key={`m${from}`} className={MARK_CLASS[m.status] ?? MARK_CLASS.pending_review}>
+        {text.slice(Math.max(from, cursor), to)}
+      </mark>,
+    );
+    cursor = to;
+  }
+  if (cursor < text.length) inner.push(<span key={`t${cursor}`}>{text.slice(cursor)}</span>);
+  return (
+    <p id={`verify-para-${index}`} className="min-h-[1.5rem] scroll-mt-24">
+      {inner.length ? inner : text || "\u00a0"}
+    </p>
+  );
+}
+
+/** 核验报告：汇总三态 → 逐条（拦截/待核在前）→ 原文按 locator 高亮并可跳转。 */
+function VerifyReportView({ data }: { data: ValidateResponse }) {
+  const { t } = useTranslation();
+  const [active, setActive] = useState<number | null>(null);
+  const report = data.verification;
+  if (!report) return null;
+
+  const rank: Record<VerifyStatus, number> = { block: 0, pending_review: 1, pass: 2 };
+  const items = [...report.items].sort((a, b) => rank[a.status] - rank[b.status]);
+  const text = data.text ?? data.cleaned_text ?? "";
+  const paragraphs = splitParagraphs(text);
+  const marks = collectMarks(report.items);
+  const mode = data.verification_mode ?? "shadow";
+
+  const jump = (index: number) => {
+    setActive(index);
+    const start = items[index]?.locator.char_start;
+    if (start == null) return;
+    const p = paragraphs.findIndex((para) => start >= para.start && start <= para.end);
+    if (p < 0) return;
+    document.getElementById(`verify-para-${p}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="rounded-full border border-green-300 bg-green-50 px-3 py-0.5 text-green-800">
+          {t("workbench.writing.verify.passCount", { count: report.counts.passed })}
+        </span>
+        <span className="rounded-full border border-red-300 bg-red-50 px-3 py-0.5 text-red-800">
+          {t("workbench.writing.verify.blockCount", { count: report.counts.blocked })}
+        </span>
+        <span className="rounded-full border border-amber-300 bg-amber-50 px-3 py-0.5 text-amber-800">
+          {t("workbench.writing.verify.pendingCount", { count: report.counts.pending })}
+        </span>
+        <span className="rounded-full border border-neutral-300 bg-neutral-50 px-3 py-0.5 text-neutral-600">
+          {t(`workbench.writing.verify.mode.${mode}`)}
+        </span>
+        <span className="text-xs text-neutral-400">
+          {t("workbench.writing.verify.reportVersion", { version: report.report_version })}
+        </span>
+      </div>
+
+      {items.length === 0 ? (
+        <EmptyLine>{t("workbench.writing.verify.empty")}</EmptyLine>
+      ) : (
+        <ol className="space-y-2">
+          {items.map((item, i) => (
+            <li key={`${item.rule_id}-${i}`}>
+              <button
+                type="button"
+                onClick={() => jump(i)}
+                disabled={item.locator.char_start == null}
+                className={`w-full rounded border px-3 py-2 text-left transition-colors ${
+                  active === i ? "border-neutral-900 bg-neutral-50" : "border-neutral-100 hover:border-neutral-400"
+                } disabled:cursor-default`}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <VerifyStatusBadge status={item.status} />
+                  <span className="text-xs text-neutral-400">{item.level}</span>
+                  <span className="font-mono text-xs text-neutral-400">{item.rule_id}</span>
+                  {item.locator.citation_id ? (
+                    <CitationBadge id={item.locator.citation_id} />
+                  ) : null}
+                  {item.locator.char_start != null ? (
+                    <span className="ml-auto text-xs text-neutral-400">
+                      {t("workbench.writing.verify.locate", {
+                        start: item.locator.char_start + 1,
+                        end: item.locator.char_end ?? item.locator.char_start + 1,
+                      })}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-sm text-neutral-700">{item.reason}</p>
+                {item.evidence.length ? (
+                  <p className="mt-0.5 text-xs text-neutral-400">
+                    {t("workbench.writing.verify.evidence")}：
+                    {item.evidence
+                      .map((e) => (e.detail ? `${e.source} · ${e.detail}` : e.source))
+                      .join("；")}
+                  </p>
+                ) : null}
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {text ? (
+        <div>
+          <p className="text-sm text-neutral-500">{t("workbench.writing.verify.located")}</p>
+          <div className="mt-1 max-h-72 overflow-auto rounded border border-neutral-100 bg-neutral-50 p-3 font-serif text-sm leading-7 text-neutral-700">
+            {paragraphs.map((para, i) => (
+              <Paragraph
+                key={i}
+                index={i}
+                text={para.text}
+                start={para.start}
+                marks={marks.filter((m) => m.start < para.end + 1 && m.end > para.start)}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 // ---- 容器：接 API ----

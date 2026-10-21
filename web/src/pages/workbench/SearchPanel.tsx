@@ -22,6 +22,8 @@ export function SearchView({
   favoriteBusyId,
   favoriteNote,
   onFavorite,
+  refine,
+  onRefine,
 }: {
   mode: SearchMode;
   onMode: (m: SearchMode) => void;
@@ -35,6 +37,9 @@ export function SearchView({
   favoriteBusyId: string | null;
   favoriteNote: string | null;
   onFavorite: (work: WorkResult) => void;
+  // 可选：传了才渲染勾选框（只读渲染场景不必关心精排）
+  refine?: boolean;
+  onRefine?: (v: boolean) => void;
 }) {
   const { t } = useTranslation();
   const canFavorite = Boolean(currentProjectLabel);
@@ -72,6 +77,17 @@ export function SearchView({
           >
             {busy ? t("workbench.search.searching") : t("workbench.search.submit")}
           </button>
+          {onRefine ? (
+            <label className="flex items-center gap-1.5 text-xs text-neutral-600">
+              <input
+                type="checkbox"
+                checked={Boolean(refine)}
+                onChange={(e) => onRefine(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-neutral-300"
+              />
+              {t("workbench.search.refine")}
+            </label>
+          ) : null}
         </div>
         {!canFavorite ? (
           <p className="mt-2 text-xs text-neutral-400">{t("workbench.project.hint")}</p>
@@ -104,29 +120,47 @@ function SearchResultView({
   const { t } = useTranslation();
   return (
     <div>
+      {/* 覆盖不完整必须显式说出来，别让用户把部分覆盖当成查全 */}
+      {data.coverage_note ? (
+        <p
+          role="note"
+          className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+        >
+          {data.coverage_note}
+        </p>
+      ) : null}
       {data.results.length === 0 ? (
         <div className="space-y-2">
           <EmptyLine>{t("workbench.search.resultsEmpty")}</EmptyLine>
           {data.reason ? (
             <p className="text-sm text-neutral-500">{t("workbench.search.reason", { reason: data.reason })}</p>
           ) : null}
+          {data.detail ? <p className="text-xs text-neutral-400">{data.detail}</p> : null}
         </div>
       ) : (
         <ul className="space-y-3">
           {data.results.map((w) => {
-            const favorited = favoritedIds.includes(w.id);
+            const favorited = favoritedIds.includes(w.work_id);
             return (
-              <li key={w.id} className="rounded-lg border border-neutral-200 bg-white p-4">
+              <li key={w.work_id} className="rounded-lg border border-neutral-200 bg-white p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="font-serif text-neutral-900">{w.title}</h3>
                     <p className="mt-1 text-xs text-neutral-500">
                       {workMeta(w)}
                     </p>
+                    {/* 部分覆盖摊开：让用户看出这条只讲到查询的哪一部分 */}
+                    {w.provenance?.matched_terms?.length ? (
+                      <p className="mt-1 text-xs text-amber-700">
+                        {t("workbench.search.coveredTerms", {
+                          terms: w.provenance.matched_terms.join("、"),
+                        })}
+                      </p>
+                    ) : null}
                   </div>
                   <button
                     type="button"
-                    disabled={!currentProjectLabel || favorited || favoriteBusyId === w.id}
+                    disabled={!currentProjectLabel || favorited || favoriteBusyId === w.work_id}
                     onClick={() => onFavorite(w)}
                     className={`shrink-0 rounded border px-3 py-1 text-xs transition-colors disabled:cursor-not-allowed ${
                       favorited
@@ -137,7 +171,7 @@ function SearchResultView({
                   >
                     {favorited
                       ? t("workbench.search.favorited")
-                      : favoriteBusyId === w.id
+                      : favoriteBusyId === w.work_id
                         ? t("workbench.loading")
                         : t("workbench.search.favorite")}
                   </button>
@@ -155,8 +189,9 @@ function workMeta(w: WorkResult): string {
   const parts: string[] = [];
   if (w.year != null) parts.push(String(w.year));
   if (w.venue) parts.push(w.venue);
-  if (w.cited_by != null) parts.push(`${w.cited_by}`);
-  if (w.provenance) parts.push(w.provenance);
+  if (w.cited_by_count != null) parts.push(`${w.cited_by_count}`);
+  if (w.provenance?.source) parts.push(w.provenance.source);
+  if (w.provenance?.authorization?.channel) parts.push(w.provenance.authorization.channel);
   return parts.join(" · ");
 }
 
@@ -166,6 +201,7 @@ export default function SearchPanel({ currentProject }: { currentProject: Projec
   const { t } = useTranslation();
   const [mode, setMode] = useState<SearchMode>("query");
   const [text, setText] = useState("");
+  const [refine, setRefine] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Loadable<SearchResponse>>({ status: "idle" });
   const [favoritedIds, setFavoritedIds] = useState<string[]>([]);
@@ -179,7 +215,9 @@ export default function SearchPanel({ currentProject }: { currentProject: Projec
     setResult({ status: "loading" });
     try {
       const data =
-        mode === "doi" ? await api.searchWorks({ doi: q }) : await api.searchWorks({ query: q });
+        mode === "doi"
+          ? await api.searchWorks({ doi: q })
+          : await api.searchWorks({ query: q, ...(refine ? { rerank: true } : {}) });
       setResult({ status: "ready", data });
     } catch (e) {
       setResult(mapApiError(e));
@@ -190,17 +228,11 @@ export default function SearchPanel({ currentProject }: { currentProject: Projec
 
   const favorite = async (work: WorkResult) => {
     if (!currentProject) return;
-    setFavoriteBusyId(work.id);
+    setFavoriteBusyId(work.work_id);
     setFavoriteNote(null);
     try {
-      await api.addCitation(currentProject.id, {
-        work_id: work.id,
-        title: work.title,
-        year: work.year,
-        venue: work.venue,
-        provenance: work.provenance,
-      });
-      setFavoritedIds((ids) => (ids.includes(work.id) ? ids : [...ids, work.id]));
+      await api.addCitation(currentProject.id, work);
+      setFavoritedIds((ids) => (ids.includes(work.work_id) ? ids : [...ids, work.work_id]));
       setFavoriteNote(t("workbench.search.favoriteOk", { project: projectLabel(currentProject) }));
     } catch (e) {
       const m = mapApiError(e);
@@ -224,6 +256,8 @@ export default function SearchPanel({ currentProject }: { currentProject: Projec
       favoriteBusyId={favoriteBusyId}
       favoriteNote={favoriteNote}
       onFavorite={(w) => void favorite(w)}
+      refine={refine}
+      onRefine={setRefine}
     />
   );
 }
